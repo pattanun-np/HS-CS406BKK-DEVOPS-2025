@@ -8,7 +8,7 @@ pipeline {
     stages {
         stage('Build') {
             steps {
-                sh "go build /var/lib/jenkins/workspace/myapp-build-pipeline/main/02-12-2025/build/go/app/main.go"
+                sh "GO111MODULE=off go build /var/lib/jenkins/workspace/myapp-build-pipeline/main/02-12-2025/build/go/app/main.go"
             }
         }
     }
