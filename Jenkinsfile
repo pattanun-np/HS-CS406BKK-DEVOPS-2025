@@ -5,19 +5,49 @@ pipeline {
         go "1.24.1"
     }
 
+    environment {
+        APP_DIR = '02-12-2025/build/go/app'
+        TTL     = '1h'      // เปลี่ยนได้ เช่น 5m, 4h, 1d (max 1d)
+        TTL_IMAGE = ''
+    }
+
     stages {
         stage('Build') {
             steps {
-                dir('02-12-2025/build/go/app') {
+                dir(env.APP_DIR) {
                     sh '''
+                        set -euxo pipefail
                         echo "Current dir: $(pwd)"
                         echo "Listing files:"
                         ls -la
 
                         # ถ้ามี main.go อยู่ในโฟลเดอร์นี้
-                        GO111MODULE=off go build main.go
+                        # ทำให้ binary ออกแนว static เพื่อลดปัญหา runtime ใน container
+                        CGO_ENABLED=0 GO111MODULE=off go build -o main main.go
                     '''
                 }
+            }
+        }
+
+        stage('Build & Push to ttl.sh') {
+            steps {
+                script {
+                    def uuid = sh(
+                        returnStdout: true,
+                        script: 'uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid'
+                    ).trim().toLowerCase()
+                    env.TTL_IMAGE = "ttl.sh/${uuid}:${env.TTL}"
+                }
+
+                dir(env.APP_DIR) {
+                    sh '''
+                        echo "Pushing image: ${TTL_IMAGE}"
+                        docker build -t "${TTL_IMAGE}" .
+                        docker push "${TTL_IMAGE}"
+                    '''
+                }
+
+                echo "ttl.sh image: ${env.TTL_IMAGE}"
             }
         }
     }
