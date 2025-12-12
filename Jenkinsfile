@@ -6,8 +6,8 @@ pipeline {
     }
 
     environment {
-        APP_DIR = '02-12-2025/build/go/app'
-        TTL     = '1h'      // เปลี่ยนได้ เช่น 5m, 4h, 1d (max 1d)
+        APP_DIR   = '02-12-2025/build/go/app'
+        TTL       = '1h'   // เช่น 5m, 4h, 1d
         TTL_IMAGE = ''
     }
 
@@ -21,8 +21,6 @@ pipeline {
                         echo "Listing files:"
                         ls -la
 
-                        # ถ้ามี main.go อยู่ในโฟลเดอร์นี้
-                        # ทำให้ binary ออกแนว static เพื่อลดปัญหา runtime ใน container
                         CGO_ENABLED=0 GO111MODULE=off go build -o main main.go
                     '''
                 }
@@ -41,6 +39,9 @@ pipeline {
 
                 dir(env.APP_DIR) {
                     sh '''
+                        set -euxo pipefail
+                        test -f Dockerfile
+
                         echo "Pushing image: ${TTL_IMAGE}"
                         docker build -t "${TTL_IMAGE}" .
                         docker push "${TTL_IMAGE}"
