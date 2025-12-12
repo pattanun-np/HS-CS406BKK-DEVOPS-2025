@@ -7,7 +7,7 @@ pipeline {
 
     environment {
         APP_DIR = '02-12-2025/build/go/app'
-        TTL     = '1h'
+        TTL     = '2h'
     }
 
     stages {
