@@ -1,110 +1,111 @@
 pipeline {
-    agent any
+  agent any
 
-    tools {
-        go "1.24.1"
+  tools {
+    go "1.24.1"
+  }
+
+  environment {
+    APP_DIR = '02-12-2025/build/go/app'
+    BIN_NAME = 'myapp'              // output binary name
+
+    // Deploy target (VM)
+    DEPLOY_HOST = '54.81.119.98'
+    SSH_CREDENTIALS_ID = 'aws-vm-ssh'
+
+    // App runtime
+    APP_PORT = '4444'
+    REMOTE_DIR = '/opt/myapp'
+    SERVICE_NAME = 'myapp'
+  }
+
+  stages {
+    stage('Build') {
+      steps {
+        dir(env.APP_DIR) {
+          sh '''#!/usr/bin/env bash
+            set -euxo pipefail
+            echo "Current dir: $(pwd)"
+            ls -la
+
+            # build static-ish binary
+            CGO_ENABLED=0 GO111MODULE=off GOOS=linux GOARCH=amd64 go build -o "${BIN_NAME}" main.go
+            file "${BIN_NAME}" || true
+          '''
+        }
+      }
     }
 
-    environment {
-        APP_DIR = '02-12-2025/build/go/app'
+    stage('Deploy to VM (no Docker)') {
+      steps {
+        withCredentials([sshUserPrivateKey(
+          credentialsId: env.SSH_CREDENTIALS_ID,
+          keyFileVariable: 'SSH_KEY',
+          usernameVariable: 'SSH_USER'
+        )]) {
+          dir(env.APP_DIR) {
+            sh '''#!/usr/bin/env bash
+              set -euxo pipefail
 
-        // ttl.sh tag (TTL)
-        TTL = '2h'
+              # Prepare remote folders
+              ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "$SSH_USER@$DEPLOY_HOST" "sudo mkdir -p ${REMOTE_DIR} && sudo chown -R $SSH_USER:$SSH_USER ${REMOTE_DIR}"
 
-        // Deploy target (Docker VM)
-        DEPLOY_HOST = '54.81.119.98'      // เปลี่ยนเป็น IP/hostname ของ Docker VM
-        APP_PORT = '4444'
-        CONTAINER_NAME = 'myapp'
+              # Copy binary
+              scp -i "$SSH_KEY" -o StrictHostKeyChecking=no "${BIN_NAME}" "$SSH_USER@$DEPLOY_HOST:${REMOTE_DIR}/${BIN_NAME}"
 
-        // Jenkins Credentials: "SSH Username with private key"
-        SSH_CREDENTIALS_ID = 'aws-vm-ssh'  // << เปลี่ยนให้ตรงกับของคุณ
+              # Create/Update systemd service and restart
+              ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "$SSH_USER@$DEPLOY_HOST" "sudo bash -s" <<'EOF'
+              set -euxo pipefail
+
+              SERVICE_NAME="${SERVICE_NAME:-myapp}"
+              REMOTE_DIR="${REMOTE_DIR:-/opt/myapp}"
+              BIN_NAME="${BIN_NAME:-myapp}"
+              APP_PORT="${APP_PORT:-4444}"
+
+              cat > /etc/systemd/system/${SERVICE_NAME}.service <<UNIT
+[Unit]
+Description=${SERVICE_NAME} service
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=${REMOTE_DIR}
+ExecStart=${REMOTE_DIR}/${BIN_NAME}
+Restart=always
+RestartSec=2
+Environment=PORT=${APP_PORT}
+
+# (optional) run as non-root user; change if needed
+User=root
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+              systemctl daemon-reload
+              systemctl enable ${SERVICE_NAME}
+              systemctl restart ${SERVICE_NAME}
+              systemctl --no-pager status ${SERVICE_NAME} || true
+              EOF
+            '''
+          }
+        }
+      }
     }
 
-    stages {
-        stage('Build') {
-            steps {
-                dir(env.APP_DIR) {
-                                    sh '''#!/usr/bin/env bash
-                set -euxo pipefail
-                echo "Current dir: $(pwd)"
-                ls -la
-                
-                # build binary ให้พร้อมสำหรับ Dockerfile ที่ COPY main
-                CGO_ENABLED=0 GO111MODULE=off go build -o main main.go
-                '''
-                }
-            }
-        }
-
-        stage('Build & Push to ttl.sh') {
-            steps {
-                script {
-                    def uuid = sh(
-                        returnStdout: true,
-                        script: 'uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid'
-                    ).trim().toLowerCase()
-
-                    env.TTL_IMAGE = "ttl.sh/${uuid}:${env.TTL}"
-                }
-
-                dir(env.APP_DIR) {
-                    withEnv(["TTL_IMAGE=${env.TTL_IMAGE}"]) {
-                        sh '''#!/usr/bin/env bash
-                    set -euxo pipefail
-                    test -f Dockerfile
-                    
-                    echo "Pushing image: $TTL_IMAGE"
-                    docker build -t "$TTL_IMAGE" .
-                    docker push "$TTL_IMAGE"
-                    '''
-                    }
-                }
-
-                echo "ttl.sh image: ${env.TTL_IMAGE}"
-            }
-        }
-
-        stage('Deploy to Docker VM') {
-            steps {
-                withCredentials([sshUserPrivateKey(
-                    credentialsId: env.SSH_CREDENTIALS_ID,
-                    keyFileVariable: 'SSH_KEY',
-                    usernameVariable: 'SSH_USER'
-                )]) {
-                    withEnv([
-                        "TTL_IMAGE=${env.TTL_IMAGE}",
-                        "DEPLOY_HOST=${env.DEPLOY_HOST}",
-                        "APP_PORT=${env.APP_PORT}",
-                        "CONTAINER_NAME=${env.CONTAINER_NAME}"
-                    ]) {
-                        sh '''#!/usr/bin/env bash
-                        set -euxo pipefail
-                        
-                        # ส่งสคริปต์ไปรันบน Docker VM (pull + run + map port 4444)
-                        ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "$SSH_USER@$DEPLOY_HOST" 'bash -s' <<EOF
-                        set -euxo pipefail
-                        
-                        docker pull "$TTL_IMAGE"
-                        docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
-                        
-                        docker run -d \
-                          --name "$CONTAINER_NAME" \
-                          --restart unless-stopped \
-                          -p "$APP_PORT:$APP_PORT" \
-                          "$TTL_IMAGE"
-                        
-                        docker ps --filter "name=$CONTAINER_NAME"
-                        EOF
-                        '''
-                    }
-                }
-            }
-        }
+    stage('Smoke test') {
+      steps {
+        sh '''#!/usr/bin/env bash
+          set -euxo pipefail
+          curl -fsS "http://${DEPLOY_HOST}:${APP_PORT}/" || true
+        '''
+      }
     }
+  }
 
-    post {
-        always {
-            echo "DONE. Image: ${env.TTL_IMAGE}"
-        }
+  post {
+    always {
+      echo "DONE (no Docker). Deployed binary: ${env.BIN_NAME} to ${env.DEPLOY_HOST}:${env.REMOTE_DIR}"
     }
+  }
 }
