@@ -1,9 +1,7 @@
 pipeline {
   agent any
 
-  tools {
-    go "1.24.1"
-  }
+  tools { go "1.24.1" }
 
   environment {
     APP_DIR   = '02-12-2025/build/go/app'
@@ -23,11 +21,7 @@ pipeline {
         dir(env.APP_DIR) {
           sh '''#!/usr/bin/env bash
             set -euxo pipefail
-            echo "Current dir: $(pwd)"
-            ls -la
-
             CGO_ENABLED=0 GO111MODULE=off GOOS=linux GOARCH=amd64 go build -o "${BIN_NAME}" main.go
-            file "${BIN_NAME}" || true
           '''
         }
       }
@@ -44,25 +38,21 @@ pipeline {
             sh '''#!/usr/bin/env bash
               set -euxo pipefail
 
-              # Ensure remote dir exists + writable for ec2-user
               ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "$SSH_USER@$DEPLOY_HOST" '
                 set -euxo pipefail
                 sudo mkdir -p /opt/myapp
                 sudo chown -R ec2-user:ec2-user /opt/myapp
                 sudo chmod 755 /opt/myapp
-                test -w /opt/myapp
               '
 
-              # Copy binary to HOME first, then sudo move into /opt/myapp (avoids scp permission issues)
               scp -i "$SSH_KEY" -o StrictHostKeyChecking=no "${BIN_NAME}" "$SSH_USER@$DEPLOY_HOST:/tmp/${BIN_NAME}"
 
-              ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "$SSH_USER@$DEPLOY_HOST" "
+              ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "$SSH_USER@$DEPLOY_HOST" '
                 set -euxo pipefail
-                sudo mv /tmp/${BIN_NAME} ${REMOTE_DIR}/${BIN_NAME}
-                sudo chmod 755 ${REMOTE_DIR}/${BIN_NAME}
-              "
+                sudo mv /tmp/myapp /opt/myapp/myapp
+                sudo chmod 755 /opt/myapp/myapp
+              '
 
-              # Write systemd service
               ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "$SSH_USER@$DEPLOY_HOST" \
                 "sudo bash -c 'cat > /etc/systemd/system/${SERVICE_NAME}.service'" <<UNIT
 [Unit]
@@ -82,7 +72,6 @@ User=root
 WantedBy=multi-user.target
 UNIT
 
-              # Reload + restart
               ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "$SSH_USER@$DEPLOY_HOST" \
                 "sudo systemctl daemon-reload && sudo systemctl enable ${SERVICE_NAME} && sudo systemctl restart ${SERVICE_NAME} && sudo systemctl --no-pager status ${SERVICE_NAME}"
             '''
@@ -93,10 +82,25 @@ UNIT
 
     stage('Smoke test') {
       steps {
-        sh '''#!/usr/bin/env bash
-          set -euxo pipefail
-          curl -fsS "http://${DEPLOY_HOST}:${APP_PORT}/" || true
-        '''
+        withCredentials([sshUserPrivateKey(
+          credentialsId: env.SSH_CREDENTIALS_ID,
+          keyFileVariable: 'SSH_KEY',
+          usernameVariable: 'SSH_USER'
+        )]) {
+          sh '''#!/usr/bin/env bash
+            set -euxo pipefail
+
+            echo "== Check from EC2 (local) =="
+            ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "$SSH_USER@$DEPLOY_HOST" "
+              set -euxo pipefail
+              sudo ss -lntp | grep :${APP_PORT} || true
+              curl -fsS --max-time 5 http://127.0.0.1:${APP_PORT}/ || true
+            "
+
+            echo "== Check from Jenkins (external) =="
+            curl -v --connect-timeout 5 --max-time 10 "http://${DEPLOY_HOST}:${APP_PORT}/"
+          '''
+        }
       }
     }
   }
