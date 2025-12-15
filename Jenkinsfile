@@ -54,4 +54,56 @@ pipeline {
               '
 
               # Copy binary to HOME first, then sudo move into /opt/myapp (avoids scp permission issues)
-              scp -i "$SSH_KEY" -_
+              scp -i "$SSH_KEY" -o StrictHostKeyChecking=no "${BIN_NAME}" "$SSH_USER@$DEPLOY_HOST:/tmp/${BIN_NAME}"
+
+              ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "$SSH_USER@$DEPLOY_HOST" "
+                set -euxo pipefail
+                sudo mv /tmp/${BIN_NAME} ${REMOTE_DIR}/${BIN_NAME}
+                sudo chmod 755 ${REMOTE_DIR}/${BIN_NAME}
+              "
+
+              # Write systemd service
+              ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "$SSH_USER@$DEPLOY_HOST" \
+                "sudo bash -c 'cat > /etc/systemd/system/${SERVICE_NAME}.service'" <<UNIT
+[Unit]
+Description=${SERVICE_NAME} service
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=${REMOTE_DIR}
+ExecStart=${REMOTE_DIR}/${BIN_NAME}
+Restart=always
+RestartSec=2
+Environment=PORT=${APP_PORT}
+User=root
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+              # Reload + restart
+              ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "$SSH_USER@$DEPLOY_HOST" \
+                "sudo systemctl daemon-reload && sudo systemctl enable ${SERVICE_NAME} && sudo systemctl restart ${SERVICE_NAME} && sudo systemctl --no-pager status ${SERVICE_NAME}"
+            '''
+          }
+        }
+      }
+    }
+
+    stage('Smoke test') {
+      steps {
+        sh '''#!/usr/bin/env bash
+          set -euxo pipefail
+          curl -fsS "http://${DEPLOY_HOST}:${APP_PORT}/" || true
+        '''
+      }
+    }
+  }
+
+  post {
+    always {
+      echo "DONE (no Docker). Deployed ${env.BIN_NAME} to ${env.DEPLOY_HOST}:${env.REMOTE_DIR} and restarted ${env.SERVICE_NAME}"
+    }
+  }
+}
