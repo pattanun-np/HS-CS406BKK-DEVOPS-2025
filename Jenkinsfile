@@ -12,8 +12,8 @@ pipeline {
     DEPLOY_HOST = '54.81.119.98'
     SSH_CREDENTIALS_ID = 'aws-vm-ssh'
 
-    APP_PORT    = '4444'
-    REMOTE_DIR  = '/opt/myapp'
+    APP_PORT     = '4444'
+    REMOTE_DIR   = '/opt/myapp'
     SERVICE_NAME = 'myapp'
   }
 
@@ -44,56 +44,14 @@ pipeline {
             sh '''#!/usr/bin/env bash
               set -euxo pipefail
 
-              # 1) Prepare remote dir
-              ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "$SSH_USER@$DEPLOY_HOST" \
-                "sudo mkdir -p ${REMOTE_DIR} && sudo chown -R ${SSH_USER}:${SSH_USER} ${REMOTE_DIR}"
+              # Ensure remote dir exists + writable for ec2-user
+              ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "$SSH_USER@$DEPLOY_HOST" '
+                set -euxo pipefail
+                sudo mkdir -p /opt/myapp
+                sudo chown -R ec2-user:ec2-user /opt/myapp
+                sudo chmod 755 /opt/myapp
+                test -w /opt/myapp
+              '
 
-              # 2) Copy binary
-              scp -i "$SSH_KEY" -o StrictHostKeyChecking=no "${BIN_NAME}" \
-                "$SSH_USER@$DEPLOY_HOST:${REMOTE_DIR}/${BIN_NAME}"
-
-              # 3) Write systemd service (NO broken EOF heredoc)
-              ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "$SSH_USER@$DEPLOY_HOST" \
-                "sudo bash -c 'cat > /etc/systemd/system/${SERVICE_NAME}.service'" <<UNIT
-[Unit]
-Description=${SERVICE_NAME} service
-After=network.target
-
-[Service]
-Type=simple
-WorkingDirectory=${REMOTE_DIR}
-ExecStart=${REMOTE_DIR}/${BIN_NAME}
-Restart=always
-RestartSec=2
-Environment=PORT=${APP_PORT}
-User=root
-
-[Install]
-WantedBy=multi-user.target
-UNIT
-
-              # 4) Reload + restart
-              ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "$SSH_USER@$DEPLOY_HOST" \
-                "sudo systemctl daemon-reload && sudo systemctl enable ${SERVICE_NAME} && sudo systemctl restart ${SERVICE_NAME} && sudo systemctl --no-pager status ${SERVICE_NAME}"
-            '''
-          }
-        }
-      }
-    }
-
-    stage('Smoke test') {
-      steps {
-        sh '''#!/usr/bin/env bash
-          set -euxo pipefail
-          curl -fsS "http://${DEPLOY_HOST}:${APP_PORT}/" || true
-        '''
-      }
-    }
-  }
-
-  post {
-    always {
-      echo "DONE (no Docker). Deployed ${env.BIN_NAME} to ${env.DEPLOY_HOST}:${env.REMOTE_DIR} and restarted ${env.SERVICE_NAME}"
-    }
-  }
-}
+              # Copy binary to HOME first, then sudo move into /opt/myapp (avoids scp permission issues)
+              scp -i "$SSH_KEY" -_
