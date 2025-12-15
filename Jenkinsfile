@@ -7,28 +7,31 @@ pipeline {
 
     environment {
         APP_DIR = '02-12-2025/build/go/app'
+
+        // ttl.sh tag (TTL)
         TTL = '2h'
 
-        // Kubernetes
-        K8S_SERVER_URL = 'https://kubernetes:6443'
-        K8S_NAMESPACE  = 'default'
-        K8S_CREDENTIALS_ID = 'k8s-jenkins-robot-token'   // << ID ของ token ใน Jenkins Credentials
-
-        POD_NAME = 'myapp'
+        // Deploy target (Docker VM)
+        DEPLOY_HOST = '54.81.119.98'      // เปลี่ยนเป็น IP/hostname ของ Docker VM
         APP_PORT = '4444'
+        CONTAINER_NAME = 'myapp'
+
+        // Jenkins Credentials: "SSH Username with private key"
+        SSH_CREDENTIALS_ID = 'aws-vm-ssh'  // << เปลี่ยนให้ตรงกับของคุณ
     }
 
     stages {
         stage('Build') {
             steps {
                 dir(env.APP_DIR) {
-                    sh '''#!/usr/bin/env bash
-set -euxo pipefail
-echo "Current dir: $(pwd)"
-ls -la
-
-CGO_ENABLED=0 GO111MODULE=off go build -o main main.go
-'''
+                                    sh '''#!/usr/bin/env bash
+                set -euxo pipefail
+                echo "Current dir: $(pwd)"
+                ls -la
+                
+                # build binary ให้พร้อมสำหรับ Dockerfile ที่ COPY main
+                CGO_ENABLED=0 GO111MODULE=off go build -o main main.go
+                '''
                 }
             }
         }
@@ -47,13 +50,13 @@ CGO_ENABLED=0 GO111MODULE=off go build -o main main.go
                 dir(env.APP_DIR) {
                     withEnv(["TTL_IMAGE=${env.TTL_IMAGE}"]) {
                         sh '''#!/usr/bin/env bash
-set -euxo pipefail
-test -f Dockerfile
-
-echo "Pushing image: $TTL_IMAGE"
-docker build -t "$TTL_IMAGE" .
-docker push "$TTL_IMAGE"
-'''
+                    set -euxo pipefail
+                    test -f Dockerfile
+                    
+                    echo "Pushing image: $TTL_IMAGE"
+                    docker build -t "$TTL_IMAGE" .
+                    docker push "$TTL_IMAGE"
+                    '''
                     }
                 }
 
@@ -61,39 +64,39 @@ docker push "$TTL_IMAGE"
             }
         }
 
-        stage('Deploy to Kubernetes') {
+        stage('Deploy to Docker VM') {
             steps {
-                withKubeConfig([
-                    credentialsId: env.K8S_CREDENTIALS_ID,
-                    serverUrl: env.K8S_SERVER_URL,
-                    namespace: env.K8S_NAMESPACE
-                ]) {
-                    sh '''#!/usr/bin/env bash
-set -euxo pipefail
-
-# Pod แก้ image ตรง ๆ ไม่ได้ → ลบแล้วสร้างใหม่ให้ชัวร์
-kubectl delete pod "$POD_NAME" -n "$K8S_NAMESPACE" --ignore-not-found=true
-
-cat <<YAML | kubectl apply -n "$K8S_NAMESPACE" -f -
-apiVersion: v1
-kind: Pod
-metadata:
-  name: ${POD_NAME}
-  labels:
-    app: ${POD_NAME}
-spec:
-  restartPolicy: Always
-  containers:
-    - name: ${POD_NAME}
-      image: ${TTL_IMAGE}
-      imagePullPolicy: Always
-      ports:
-        - containerPort: ${APP_PORT}
-YAML
-
-kubectl wait -n "$K8S_NAMESPACE" --for=condition=Ready pod/"$POD_NAME" --timeout=120s
-kubectl get pod -n "$K8S_NAMESPACE" "$POD_NAME" -o wide
-'''
+                withCredentials([sshUserPrivateKey(
+                    credentialsId: env.SSH_CREDENTIALS_ID,
+                    keyFileVariable: 'SSH_KEY',
+                    usernameVariable: 'SSH_USER'
+                )]) {
+                    withEnv([
+                        "TTL_IMAGE=${env.TTL_IMAGE}",
+                        "DEPLOY_HOST=${env.DEPLOY_HOST}",
+                        "APP_PORT=${env.APP_PORT}",
+                        "CONTAINER_NAME=${env.CONTAINER_NAME}"
+                    ]) {
+                        sh '''#!/usr/bin/env bash
+                        set -euxo pipefail
+                        
+                        # ส่งสคริปต์ไปรันบน Docker VM (pull + run + map port 4444)
+                        ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "$SSH_USER@$DEPLOY_HOST" 'bash -s' <<EOF
+                        set -euxo pipefail
+                        
+                        docker pull "$TTL_IMAGE"
+                        docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
+                        
+                        docker run -d \
+                          --name "$CONTAINER_NAME" \
+                          --restart unless-stopped \
+                          -p "$APP_PORT:$APP_PORT" \
+                          "$TTL_IMAGE"
+                        
+                        docker ps --filter "name=$CONTAINER_NAME"
+                        EOF
+                        '''
+                    }
                 }
             }
         }
