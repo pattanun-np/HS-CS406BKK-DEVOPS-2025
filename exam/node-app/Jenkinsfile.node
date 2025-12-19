@@ -45,7 +45,6 @@ npm test
                     keyFileVariable: 'SSH_KEY',
                     usernameVariable: 'SSH_USER'
                 )]) {
-                    // Copy application files to remote server
                     dir(env.APP_DIR) {
                         sh '''#!/usr/bin/env bash
 set -euxo pipefail
@@ -58,7 +57,6 @@ scp -i "$SSH_KEY" -o StrictHostKeyChecking=no package.json index.js "$SSH_USER@$
 '''
                     }
 
-                    // Install dependencies and run application
                     sh '''#!/usr/bin/env bash
 set -euxo pipefail
 
@@ -67,13 +65,16 @@ set -euxo pipefail
 
 cd ~/app
 
-# Install Node.js if not present (using nvm)
-if ! command -v node &> /dev/null; then
-    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.0/install.sh | bash
-    export NVM_DIR="$HOME/.nvm"
-    [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
-    nvm install 24
+# Install nvm if not present
+export NVM_DIR="$HOME/.nvm"
+if [ ! -d "$NVM_DIR" ]; then
+    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
 fi
+
+# Load nvm and install Node.js
+[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+nvm install 24
+nvm use 24
 
 # Install dependencies
 npm install --production
