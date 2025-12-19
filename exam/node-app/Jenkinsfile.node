@@ -7,7 +7,7 @@ pipeline {
 
     environment {
         APP_DIR = 'exam/node-app'
-        DEPLOY_HOST = 'docker'
+        DEPLOY_HOST = 'target'
         APP_PORT = '4444'
         SSH_CREDENTIALS_ID = 'docker-vm-ssh'
         APP_NAME = 'node-app'
