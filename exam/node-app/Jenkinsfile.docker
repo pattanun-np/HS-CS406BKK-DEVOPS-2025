@@ -1,0 +1,118 @@
+pipeline {
+    agent any
+
+    tools {
+        nodejs "node-24"
+    }
+
+    environment {
+        APP_DIR = 'exam/node-app'
+        TTL = '2h'
+        DEPLOY_HOST = 'docker'
+        APP_PORT = '4444'
+        CONTAINER_NAME = 'node-app'
+        SSH_CREDENTIALS_ID = 'docker-vm-ssh'
+    }
+
+    stages {
+        stage('Install Dependencies') {
+            steps {
+                dir(env.APP_DIR) {
+                    sh '''#!/usr/bin/env bash
+set -euxo pipefail
+echo "Node version: $(node --version)"
+echo "NPM version: $(npm --version)"
+npm install
+'''
+                }
+            }
+        }
+
+        stage('Run Tests') {
+            steps {
+                dir(env.APP_DIR) {
+                    sh '''#!/usr/bin/env bash
+set -euxo pipefail
+npm test
+'''
+                }
+            }
+        }
+
+        stage('Build & Push to ttl.sh') {
+            steps {
+                script {
+                    def uuid = sh(
+                        returnStdout: true,
+                        script: 'uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid'
+                    ).trim().toLowerCase()
+
+                    env.TTL_IMAGE = "ttl.sh/${uuid}:${env.TTL}"
+                }
+
+                dir(env.APP_DIR) {
+                    withEnv(["TTL_IMAGE=${env.TTL_IMAGE}"]) {
+                        sh '''#!/usr/bin/env bash
+set -euxo pipefail
+test -f Dockerfile
+
+echo "Building image: $TTL_IMAGE"
+docker build -t "$TTL_IMAGE" .
+docker push "$TTL_IMAGE"
+'''
+                    }
+                }
+
+                echo "ttl.sh image: ${env.TTL_IMAGE}"
+            }
+        }
+
+        stage('Deploy to Docker VM') {
+            steps {
+                withCredentials([sshUserPrivateKey(
+                    credentialsId: env.SSH_CREDENTIALS_ID,
+                    keyFileVariable: 'SSH_KEY',
+                    usernameVariable: 'SSH_USER'
+                )]) {
+                    withEnv([
+                        "TTL_IMAGE=${env.TTL_IMAGE}",
+                        "DEPLOY_HOST=${env.DEPLOY_HOST}",
+                        "APP_PORT=${env.APP_PORT}",
+                        "CONTAINER_NAME=${env.CONTAINER_NAME}"
+                    ]) {
+                        sh '''#!/usr/bin/env bash
+set -euxo pipefail
+
+ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "$SSH_USER@$DEPLOY_HOST" 'bash -s' <<EOF
+set -euxo pipefail
+
+docker pull "$TTL_IMAGE"
+docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
+
+docker run -d \
+  --name "$CONTAINER_NAME" \
+  --restart unless-stopped \
+  -p "$APP_PORT:$APP_PORT" \
+  "$TTL_IMAGE"
+
+docker ps --filter "name=$CONTAINER_NAME"
+EOF
+'''
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            echo "Pipeline completed. Image: ${env.TTL_IMAGE ?: 'N/A'}"
+        }
+        success {
+            echo "Docker deployment successful!"
+        }
+        failure {
+            echo "Deployment failed!"
+        }
+    }
+}

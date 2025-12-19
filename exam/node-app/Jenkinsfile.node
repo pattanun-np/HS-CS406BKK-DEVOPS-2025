@@ -1,0 +1,105 @@
+pipeline {
+    agent any
+
+    tools {
+        nodejs "node-24"
+    }
+
+    environment {
+        APP_DIR = 'exam/node-app'
+        DEPLOY_HOST = 'docker'
+        APP_PORT = '4444'
+        SSH_CREDENTIALS_ID = 'docker-vm-ssh'
+        APP_NAME = 'node-app'
+    }
+
+    stages {
+        stage('Install Dependencies') {
+            steps {
+                dir(env.APP_DIR) {
+                    sh '''#!/usr/bin/env bash
+set -euxo pipefail
+echo "Node version: $(node --version)"
+echo "NPM version: $(npm --version)"
+npm install
+'''
+                }
+            }
+        }
+
+        stage('Run Tests') {
+            steps {
+                dir(env.APP_DIR) {
+                    sh '''#!/usr/bin/env bash
+set -euxo pipefail
+npm test
+'''
+                }
+            }
+        }
+
+        stage('Deploy as Node Process') {
+            steps {
+                withCredentials([sshUserPrivateKey(
+                    credentialsId: env.SSH_CREDENTIALS_ID,
+                    keyFileVariable: 'SSH_KEY',
+                    usernameVariable: 'SSH_USER'
+                )]) {
+                    // Copy application files to remote server
+                    dir(env.APP_DIR) {
+                        sh '''#!/usr/bin/env bash
+set -euxo pipefail
+
+# Create app directory on remote server
+ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "$SSH_USER@$DEPLOY_HOST" "mkdir -p ~/app"
+
+# Copy files to remote server
+scp -i "$SSH_KEY" -o StrictHostKeyChecking=no package.json index.js "$SSH_USER@$DEPLOY_HOST:~/app/"
+'''
+                    }
+
+                    // Install dependencies and run application
+                    sh '''#!/usr/bin/env bash
+set -euxo pipefail
+
+ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "$SSH_USER@$DEPLOY_HOST" 'bash -s' <<'EOF'
+set -euxo pipefail
+
+cd ~/app
+
+# Install Node.js if not present (using nvm)
+if ! command -v node &> /dev/null; then
+    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.0/install.sh | bash
+    export NVM_DIR="$HOME/.nvm"
+    [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+    nvm install 24
+fi
+
+# Install dependencies
+npm install --production
+
+# Stop existing process if running
+pkill -f "node index.js" || true
+
+# Start application with nohup
+nohup node index.js > app.log 2>&1 &
+
+sleep 2
+echo "Application started. Checking process..."
+pgrep -f "node index.js" && echo "Process is running"
+EOF
+'''
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "Node.js application deployed successfully!"
+        }
+        failure {
+            echo "Deployment failed!"
+        }
+    }
+}
