@@ -10,7 +10,7 @@ pipeline {
     environment {
         APP_DIR = 'exam/node-app'
         TTL = '2h'
-        APP_PORT = '4444'
+        APP_PORT = '4445'
         APP_NAME = 'myapp'
         CONTAINER_NAME = 'node-app'
         TARGET_HOST = 'target'

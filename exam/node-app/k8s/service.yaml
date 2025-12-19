@@ -9,4 +9,4 @@ spec:
   ports:
     - port: 4444
       targetPort: 4444
-      nodePort: 30444
+      nodePort: 30445
