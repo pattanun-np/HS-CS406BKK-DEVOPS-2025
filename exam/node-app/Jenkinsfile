@@ -2,11 +2,9 @@ pipeline {
     agent any
 
     parameters {
-        choice(
-            name: 'DEPLOY_TARGET',
-            choices: ['node', 'docker', 'k8s'],
-            description: 'Select deployment target: node (direct), docker (container), k8s (kubernetes)'
-        )
+        booleanParam(name: 'DEPLOY_NODE', defaultValue: false, description: 'Deploy as Node.js process')
+        booleanParam(name: 'DEPLOY_DOCKER', defaultValue: false, description: 'Deploy to Docker')
+        booleanParam(name: 'DEPLOY_K8S', defaultValue: false, description: 'Deploy to Kubernetes')
     }
 
     environment {
@@ -70,7 +68,7 @@ npm test
 
         stage('Build & Push Docker Image') {
             when {
-                expression { params.DEPLOY_TARGET in ['docker', 'k8s'] }
+                expression { params.DEPLOY_DOCKER || params.DEPLOY_K8S }
             }
             steps {
                 script {
@@ -91,24 +89,26 @@ npm test
             }
         }
 
-        stage('Deploy as Node Process') {
-            when {
-                expression { params.DEPLOY_TARGET == 'node' }
-            }
-            steps {
-                withCredentials([sshUserPrivateKey(
-                    credentialsId: env.TARGET_SSH_CREDENTIALS_ID,
-                    keyFileVariable: 'SSH_KEY',
-                    usernameVariable: 'SSH_USER'
-                )]) {
-                    dir(env.APP_DIR) {
-                        sh '''
+        stage('Parallel Deploy') {
+            parallel {
+                stage('Deploy as Node Process') {
+                    when {
+                        expression { params.DEPLOY_NODE }
+                    }
+                    steps {
+                        withCredentials([sshUserPrivateKey(
+                            credentialsId: env.TARGET_SSH_CREDENTIALS_ID,
+                            keyFileVariable: 'SSH_KEY',
+                            usernameVariable: 'SSH_USER'
+                        )]) {
+                            dir(env.APP_DIR) {
+                                sh '''
 ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "$SSH_USER@$TARGET_HOST" "mkdir -p ~/app"
 scp -i "$SSH_KEY" -o StrictHostKeyChecking=no package.json index.js "$SSH_USER@$TARGET_HOST:~/app/"
 '''
-                    }
+                            }
 
-                    sh '''
+                            sh '''
 ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "$SSH_USER@$TARGET_HOST" 'bash -s' <<'EOF'
 set -euxo pipefail
 cd ~/app
@@ -128,21 +128,21 @@ sleep 2
 pgrep -f "node index.js" && echo "Process is running"
 EOF
 '''
+                        }
+                    }
                 }
-            }
-        }
 
-        stage('Deploy to Docker') {
-            when {
-                expression { params.DEPLOY_TARGET == 'docker' }
-            }
-            steps {
-                withCredentials([sshUserPrivateKey(
-                    credentialsId: env.DOCKER_SSH_CREDENTIALS_ID,
-                    keyFileVariable: 'SSH_KEY',
-                    usernameVariable: 'SSH_USER'
-                )]) {
-                    sh """
+                stage('Deploy to Docker') {
+                    when {
+                        expression { params.DEPLOY_DOCKER }
+                    }
+                    steps {
+                        withCredentials([sshUserPrivateKey(
+                            credentialsId: env.DOCKER_SSH_CREDENTIALS_ID,
+                            keyFileVariable: 'SSH_KEY',
+                            usernameVariable: 'SSH_USER'
+                        )]) {
+                            sh """
 ssh -i "\$SSH_KEY" -o StrictHostKeyChecking=no "\$SSH_USER@${env.DOCKER_HOST}" 'bash -s' <<EOF
 set -euxo pipefail
 
@@ -158,35 +158,37 @@ docker run -d \\
 docker ps --filter "name=${env.CONTAINER_NAME}"
 EOF
 """
+                        }
+                    }
                 }
-            }
-        }
 
-        stage('Deploy to Kubernetes') {
-            when {
-                expression { params.DEPLOY_TARGET == 'k8s' }
-            }
-            steps {
-                withCredentials([string(credentialsId: env.K8S_CREDENTIALS_ID, variable: 'K8S_TOKEN')]) {
-                    dir(env.APP_DIR) {
-                        sh """
+                stage('Deploy to Kubernetes') {
+                    when {
+                        expression { params.DEPLOY_K8S }
+                    }
+                    steps {
+                        withCredentials([string(credentialsId: env.K8S_CREDENTIALS_ID, variable: 'K8S_TOKEN')]) {
+                            dir(env.APP_DIR) {
+                                sh """
 sed -i "s|IMAGE_PLACEHOLDER|${env.TTL_IMAGE}|g" k8s/deployment.yaml
 
-kubectl --server=${env.K8S_SERVER} --token="\$K8S_TOKEN" --insecure-skip-tls-verify=true \
+kubectl --server=${env.K8S_SERVER} --token="\$K8S_TOKEN" --insecure-skip-tls-verify=true \\
   apply -f k8s/deployment.yaml -n ${env.K8S_NAMESPACE}
 
-kubectl --server=${env.K8S_SERVER} --token="\$K8S_TOKEN" --insecure-skip-tls-verify=true \
+kubectl --server=${env.K8S_SERVER} --token="\$K8S_TOKEN" --insecure-skip-tls-verify=true \\
   apply -f k8s/service.yaml -n ${env.K8S_NAMESPACE}
 
-kubectl --server=${env.K8S_SERVER} --token="\$K8S_TOKEN" --insecure-skip-tls-verify=true \
+kubectl --server=${env.K8S_SERVER} --token="\$K8S_TOKEN" --insecure-skip-tls-verify=true \\
   rollout status deployment/${env.APP_NAME} -n ${env.K8S_NAMESPACE} --timeout=120s
 
-kubectl --server=${env.K8S_SERVER} --token="\$K8S_TOKEN" --insecure-skip-tls-verify=true \
+kubectl --server=${env.K8S_SERVER} --token="\$K8S_TOKEN" --insecure-skip-tls-verify=true \\
   get pods -n ${env.K8S_NAMESPACE} -l app=${env.APP_NAME}
 
-kubectl --server=${env.K8S_SERVER} --token="\$K8S_TOKEN" --insecure-skip-tls-verify=true \
+kubectl --server=${env.K8S_SERVER} --token="\$K8S_TOKEN" --insecure-skip-tls-verify=true \\
   get svc -n ${env.K8S_NAMESPACE} -l app=${env.APP_NAME}
 """
+                            }
+                        }
                     }
                 }
             }
@@ -195,7 +197,8 @@ kubectl --server=${env.K8S_SERVER} --token="\$K8S_TOKEN" --insecure-skip-tls-ver
 
     post {
         always {
-            echo "Pipeline completed. Deploy target: ${params.DEPLOY_TARGET}"
+            echo "Pipeline completed."
+            echo "Deploy Node: ${params.DEPLOY_NODE}, Deploy Docker: ${params.DEPLOY_DOCKER}, Deploy K8S: ${params.DEPLOY_K8S}"
             script {
                 if (env.TTL_IMAGE) {
                     echo "Image: ${env.TTL_IMAGE}"
