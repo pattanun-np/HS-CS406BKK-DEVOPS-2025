@@ -11,7 +11,7 @@ pipeline {
         APP_DIR = 'exam/node-app'
         TTL = '2h'
         APP_PORT = '4444'
-        APP_NAME = 'MYAPP'
+        APP_NAME = 'myapp'
         CONTAINER_NAME = 'node-app'
         TARGET_HOST = 'target'
         DOCKER_VM_HOST = 'docker'
