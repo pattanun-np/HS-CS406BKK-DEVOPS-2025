@@ -18,12 +18,9 @@ pipeline {
         stage('Install Dependencies') {
             steps {
                 dir(env.APP_DIR) {
-                    sh '''#!/usr/bin/env bash
-set -euxo pipefail
-echo "Node version: $(node --version)"
-echo "NPM version: $(npm --version)"
-npm install
-'''
+                    sh 'node --version'
+                    sh 'npm --version'
+                    sh 'npm install'
                 }
             }
         }
@@ -31,10 +28,7 @@ npm install
         stage('Run Tests') {
             steps {
                 dir(env.APP_DIR) {
-                    sh '''#!/usr/bin/env bash
-set -euxo pipefail
-npm test
-'''
+                    sh 'npm test'
                 }
             }
         }
@@ -51,16 +45,8 @@ npm test
                 }
 
                 dir(env.APP_DIR) {
-                    withEnv(["TTL_IMAGE=${env.TTL_IMAGE}"]) {
-                        sh '''#!/usr/bin/env bash
-set -euxo pipefail
-test -f Dockerfile
-
-echo "Building image: $TTL_IMAGE"
-docker build -t "$TTL_IMAGE" .
-docker push "$TTL_IMAGE"
-'''
-                    }
+                    sh "docker build -t ${env.TTL_IMAGE} ."
+                    sh "docker push ${env.TTL_IMAGE}"
                 }
 
                 echo "ttl.sh image: ${env.TTL_IMAGE}"
@@ -74,31 +60,22 @@ docker push "$TTL_IMAGE"
                     keyFileVariable: 'SSH_KEY',
                     usernameVariable: 'SSH_USER'
                 )]) {
-                    withEnv([
-                        "TTL_IMAGE=${env.TTL_IMAGE}",
-                        "DEPLOY_HOST=${env.DEPLOY_HOST}",
-                        "APP_PORT=${env.APP_PORT}",
-                        "CONTAINER_NAME=${env.CONTAINER_NAME}"
-                    ]) {
-                        sh '''#!/usr/bin/env bash
+                    sh """
+ssh -i "\$SSH_KEY" -o StrictHostKeyChecking=no "\$SSH_USER@${env.DEPLOY_HOST}" 'bash -s' <<EOF
 set -euxo pipefail
 
-ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "$SSH_USER@$DEPLOY_HOST" 'bash -s' <<EOF
-set -euxo pipefail
+docker pull ${env.TTL_IMAGE}
+docker rm -f ${env.CONTAINER_NAME} 2>/dev/null || true
 
-docker pull "$TTL_IMAGE"
-docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
+docker run -d \\
+  --name ${env.CONTAINER_NAME} \\
+  --restart unless-stopped \\
+  -p ${env.APP_PORT}:${env.APP_PORT} \\
+  ${env.TTL_IMAGE}
 
-docker run -d \
-  --name "$CONTAINER_NAME" \
-  --restart unless-stopped \
-  -p "$APP_PORT:$APP_PORT" \
-  "$TTL_IMAGE"
-
-docker ps --filter "name=$CONTAINER_NAME"
+docker ps --filter "name=${env.CONTAINER_NAME}"
 EOF
-'''
-                    }
+"""
                 }
             }
         }
@@ -109,10 +86,10 @@ EOF
             echo "Pipeline completed. Image: ${env.TTL_IMAGE ?: 'N/A'}"
         }
         success {
-            echo "Docker deployment successful!"
+            echo 'Docker deployment successful!'
         }
         failure {
-            echo "Deployment failed!"
+            echo 'Deployment failed!'
         }
     }
 }

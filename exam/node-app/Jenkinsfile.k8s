@@ -18,12 +18,9 @@ pipeline {
         stage('Install Dependencies') {
             steps {
                 dir(env.APP_DIR) {
-                    sh '''#!/usr/bin/env bash
-set -euxo pipefail
-echo "Node version: $(node --version)"
-echo "NPM version: $(npm --version)"
-npm install
-'''
+                    sh 'node --version'
+                    sh 'npm --version'
+                    sh 'npm install'
                 }
             }
         }
@@ -31,10 +28,7 @@ npm install
         stage('Run Tests') {
             steps {
                 dir(env.APP_DIR) {
-                    sh '''#!/usr/bin/env bash
-set -euxo pipefail
-npm test
-'''
+                    sh 'npm test'
                 }
             }
         }
@@ -51,16 +45,8 @@ npm test
                 }
 
                 dir(env.APP_DIR) {
-                    withEnv(["TTL_IMAGE=${env.TTL_IMAGE}"]) {
-                        sh '''#!/usr/bin/env bash
-set -euxo pipefail
-test -f Dockerfile
-
-echo "Building image: $TTL_IMAGE"
-docker build -t "$TTL_IMAGE" .
-docker push "$TTL_IMAGE"
-'''
-                    }
+                    sh "docker build -t ${env.TTL_IMAGE} ."
+                    sh "docker push ${env.TTL_IMAGE}"
                 }
 
                 echo "ttl.sh image: ${env.TTL_IMAGE}"
@@ -75,43 +61,27 @@ docker push "$TTL_IMAGE"
                     usernameVariable: 'SSH_USER'
                 )]) {
                     dir(env.APP_DIR) {
-                        withEnv([
-                            "TTL_IMAGE=${env.TTL_IMAGE}",
-                            "K8S_HOST=${env.K8S_HOST}",
-                            "APP_NAME=${env.APP_NAME}",
-                            "K8S_NAMESPACE=${env.K8S_NAMESPACE}"
-                        ]) {
-                            sh '''#!/usr/bin/env bash
+                        sh """
+scp -i "\$SSH_KEY" -o StrictHostKeyChecking=no -r k8s "\$SSH_USER@${env.K8S_HOST}:/tmp/${env.APP_NAME}-k8s"
+
+ssh -i "\$SSH_KEY" -o StrictHostKeyChecking=no "\$SSH_USER@${env.K8S_HOST}" 'bash -s' <<EOF
 set -euxo pipefail
 
-# Copy k8s manifests to remote server
-scp -i "$SSH_KEY" -o StrictHostKeyChecking=no -r k8s "$SSH_USER@$K8S_HOST:/tmp/${APP_NAME}-k8s"
+cd /tmp/${env.APP_NAME}-k8s
 
-# Deploy to Kubernetes
-ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "$SSH_USER@$K8S_HOST" 'bash -s' <<EOF
-set -euxo pipefail
+sed -i "s|IMAGE_PLACEHOLDER|${env.TTL_IMAGE}|g" deployment.yaml
 
-cd /tmp/${APP_NAME}-k8s
+kubectl apply -f deployment.yaml -n ${env.K8S_NAMESPACE}
+kubectl apply -f service.yaml -n ${env.K8S_NAMESPACE}
 
-# Replace image placeholder with actual image
-sed -i "s|IMAGE_PLACEHOLDER|${TTL_IMAGE}|g" deployment.yaml
+kubectl rollout status deployment/${env.APP_NAME} -n ${env.K8S_NAMESPACE} --timeout=120s
 
-# Apply the configuration
-kubectl apply -f deployment.yaml -n ${K8S_NAMESPACE}
-kubectl apply -f service.yaml -n ${K8S_NAMESPACE}
+kubectl get pods -n ${env.K8S_NAMESPACE} -l app=${env.APP_NAME}
+kubectl get svc -n ${env.K8S_NAMESPACE} -l app=${env.APP_NAME}
 
-# Wait for rollout
-kubectl rollout status deployment/${APP_NAME} -n ${K8S_NAMESPACE} --timeout=120s
-
-# Show status
-kubectl get pods -n ${K8S_NAMESPACE} -l app=${APP_NAME}
-kubectl get svc -n ${K8S_NAMESPACE} -l app=${APP_NAME}
-
-# Cleanup
-rm -rf /tmp/${APP_NAME}-k8s
+rm -rf /tmp/${env.APP_NAME}-k8s
 EOF
-'''
-                        }
+"""
                     }
                 }
             }
@@ -123,10 +93,10 @@ EOF
             echo "Pipeline completed. Image: ${env.TTL_IMAGE ?: 'N/A'}"
         }
         success {
-            echo "Kubernetes deployment successful!"
+            echo 'Kubernetes deployment successful!'
         }
         failure {
-            echo "Deployment failed!"
+            echo 'Deployment failed!'
         }
     }
 }
