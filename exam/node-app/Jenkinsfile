@@ -179,7 +179,7 @@ kubectl --server=${env.K8S_SERVER} --token="\$K8S_TOKEN" --insecure-skip-tls-ver
   apply -f k8s/service.yaml -n ${env.K8S_NAMESPACE}
 
 kubectl --server=${env.K8S_SERVER} --token="\$K8S_TOKEN" --insecure-skip-tls-verify=true \\
-  rollout status deployment/${env.APP_NAME} -n ${env.K8S_NAMESPACE} --timeout=120s
+  wait --for=condition=Ready pod/${env.APP_NAME} -n ${env.K8S_NAMESPACE} --timeout=120s
 
 kubectl --server=${env.K8S_SERVER} --token="\$K8S_TOKEN" --insecure-skip-tls-verify=true \\
   get pods -n ${env.K8S_NAMESPACE} -l app=${env.APP_NAME}
