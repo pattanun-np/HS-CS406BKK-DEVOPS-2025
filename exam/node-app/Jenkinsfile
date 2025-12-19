@@ -15,11 +15,13 @@ pipeline {
         APP_PORT = '4444'
         APP_NAME = 'node-app'
         CONTAINER_NAME = 'node-app'
-        DEPLOY_HOST = 'docker'
+        TARGET_HOST = 'target'
+        DOCKER_HOST = 'docker'
         K8S_SERVER = 'https://k8s-master:6443'
         K8S_NAMESPACE = 'default'
+        TARGET_SSH_CREDENTIALS_ID = 'target-vm-ssh'
+        DOCKER_SSH_CREDENTIALS_ID = 'docker-vm-ssh'
         K8S_CREDENTIALS_ID = 'k8s-token'
-        SSH_CREDENTIALS_ID = 'docker-vm-ssh'
         NODE_VERSION = '24'
     }
 
@@ -95,19 +97,19 @@ npm test
             }
             steps {
                 withCredentials([sshUserPrivateKey(
-                    credentialsId: env.SSH_CREDENTIALS_ID,
+                    credentialsId: env.TARGET_SSH_CREDENTIALS_ID,
                     keyFileVariable: 'SSH_KEY',
                     usernameVariable: 'SSH_USER'
                 )]) {
                     dir(env.APP_DIR) {
                         sh '''
-ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "$SSH_USER@$DEPLOY_HOST" "mkdir -p ~/app"
-scp -i "$SSH_KEY" -o StrictHostKeyChecking=no package.json index.js "$SSH_USER@$DEPLOY_HOST:~/app/"
+ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "$SSH_USER@$TARGET_HOST" "mkdir -p ~/app"
+scp -i "$SSH_KEY" -o StrictHostKeyChecking=no package.json index.js "$SSH_USER@$TARGET_HOST:~/app/"
 '''
                     }
 
                     sh '''
-ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "$SSH_USER@$DEPLOY_HOST" 'bash -s' <<'EOF'
+ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "$SSH_USER@$TARGET_HOST" 'bash -s' <<'EOF'
 set -euxo pipefail
 cd ~/app
 
@@ -136,12 +138,12 @@ EOF
             }
             steps {
                 withCredentials([sshUserPrivateKey(
-                    credentialsId: env.SSH_CREDENTIALS_ID,
+                    credentialsId: env.DOCKER_SSH_CREDENTIALS_ID,
                     keyFileVariable: 'SSH_KEY',
                     usernameVariable: 'SSH_USER'
                 )]) {
                     sh """
-ssh -i "\$SSH_KEY" -o StrictHostKeyChecking=no "\$SSH_USER@${env.DEPLOY_HOST}" 'bash -s' <<EOF
+ssh -i "\$SSH_KEY" -o StrictHostKeyChecking=no "\$SSH_USER@${env.DOCKER_HOST}" 'bash -s' <<EOF
 set -euxo pipefail
 
 docker pull ${env.TTL_IMAGE}
