@@ -1,0 +1,214 @@
+pipeline {
+    agent any
+
+    parameters {
+        choice(
+            name: 'DEPLOY_TARGET',
+            choices: ['node', 'docker', 'k8s'],
+            description: 'Select deployment target: node (direct), docker (container), k8s (kubernetes)'
+        )
+    }
+
+    environment {
+        APP_DIR = 'exam/node-app'
+        TTL = '2h'
+        APP_PORT = '4444'
+        APP_NAME = 'node-app'
+        CONTAINER_NAME = 'node-app'
+        DEPLOY_HOST = 'docker'
+        K8S_HOST = 'k8s-master'
+        K8S_NAMESPACE = 'default'
+        SSH_CREDENTIALS_ID = 'docker-vm-ssh'
+        NODE_VERSION = '24'
+    }
+
+    stages {
+        stage('Setup Node.js') {
+            steps {
+                sh '''
+export NVM_DIR="$HOME/.nvm"
+if [ ! -d "$NVM_DIR" ]; then
+    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
+fi
+. "$NVM_DIR/nvm.sh"
+nvm install $NODE_VERSION
+nvm use $NODE_VERSION
+echo "Node version: $(node --version)"
+echo "NPM version: $(npm --version)"
+'''
+            }
+        }
+
+        stage('Install Dependencies') {
+            steps {
+                dir(env.APP_DIR) {
+                    sh '''
+export NVM_DIR="$HOME/.nvm"
+. "$NVM_DIR/nvm.sh"
+nvm use $NODE_VERSION
+npm install
+'''
+                }
+            }
+        }
+
+        stage('Run Tests') {
+            steps {
+                dir(env.APP_DIR) {
+                    sh '''
+export NVM_DIR="$HOME/.nvm"
+. "$NVM_DIR/nvm.sh"
+nvm use $NODE_VERSION
+npm test
+'''
+                }
+            }
+        }
+
+        stage('Build & Push Docker Image') {
+            when {
+                expression { params.DEPLOY_TARGET in ['docker', 'k8s'] }
+            }
+            steps {
+                script {
+                    def uuid = sh(
+                        returnStdout: true,
+                        script: 'uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid'
+                    ).trim().toLowerCase()
+
+                    env.TTL_IMAGE = "ttl.sh/${uuid}:${env.TTL}"
+                }
+
+                dir(env.APP_DIR) {
+                    sh "docker build -t ${env.TTL_IMAGE} ."
+                    sh "docker push ${env.TTL_IMAGE}"
+                }
+
+                echo "ttl.sh image: ${env.TTL_IMAGE}"
+            }
+        }
+
+        stage('Deploy as Node Process') {
+            when {
+                expression { params.DEPLOY_TARGET == 'node' }
+            }
+            steps {
+                withCredentials([sshUserPrivateKey(
+                    credentialsId: env.SSH_CREDENTIALS_ID,
+                    keyFileVariable: 'SSH_KEY',
+                    usernameVariable: 'SSH_USER'
+                )]) {
+                    dir(env.APP_DIR) {
+                        sh '''
+ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "$SSH_USER@$DEPLOY_HOST" "mkdir -p ~/app"
+scp -i "$SSH_KEY" -o StrictHostKeyChecking=no package.json index.js "$SSH_USER@$DEPLOY_HOST:~/app/"
+'''
+                    }
+
+                    sh '''
+ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "$SSH_USER@$DEPLOY_HOST" 'bash -s' <<'EOF'
+set -euxo pipefail
+cd ~/app
+
+export NVM_DIR="$HOME/.nvm"
+if [ ! -d "$NVM_DIR" ]; then
+    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
+fi
+. "$NVM_DIR/nvm.sh"
+nvm install 24
+nvm use 24
+
+npm install --production
+pkill -f "node index.js" || true
+nohup node index.js > app.log 2>&1 &
+sleep 2
+pgrep -f "node index.js" && echo "Process is running"
+EOF
+'''
+                }
+            }
+        }
+
+        stage('Deploy to Docker') {
+            when {
+                expression { params.DEPLOY_TARGET == 'docker' }
+            }
+            steps {
+                withCredentials([sshUserPrivateKey(
+                    credentialsId: env.SSH_CREDENTIALS_ID,
+                    keyFileVariable: 'SSH_KEY',
+                    usernameVariable: 'SSH_USER'
+                )]) {
+                    sh """
+ssh -i "\$SSH_KEY" -o StrictHostKeyChecking=no "\$SSH_USER@${env.DEPLOY_HOST}" 'bash -s' <<EOF
+set -euxo pipefail
+
+docker pull ${env.TTL_IMAGE}
+docker rm -f ${env.CONTAINER_NAME} 2>/dev/null || true
+
+docker run -d \\
+  --name ${env.CONTAINER_NAME} \\
+  --restart unless-stopped \\
+  -p ${env.APP_PORT}:${env.APP_PORT} \\
+  ${env.TTL_IMAGE}
+
+docker ps --filter "name=${env.CONTAINER_NAME}"
+EOF
+"""
+                }
+            }
+        }
+
+        stage('Deploy to Kubernetes') {
+            when {
+                expression { params.DEPLOY_TARGET == 'k8s' }
+            }
+            steps {
+                withCredentials([sshUserPrivateKey(
+                    credentialsId: env.SSH_CREDENTIALS_ID,
+                    keyFileVariable: 'SSH_KEY',
+                    usernameVariable: 'SSH_USER'
+                )]) {
+                    dir(env.APP_DIR) {
+                        sh """
+scp -i "\$SSH_KEY" -o StrictHostKeyChecking=no -r k8s "\$SSH_USER@${env.K8S_HOST}:/tmp/${env.APP_NAME}-k8s"
+
+ssh -i "\$SSH_KEY" -o StrictHostKeyChecking=no "\$SSH_USER@${env.K8S_HOST}" 'bash -s' <<EOF
+set -euxo pipefail
+
+cd /tmp/${env.APP_NAME}-k8s
+sed -i "s|IMAGE_PLACEHOLDER|${env.TTL_IMAGE}|g" deployment.yaml
+
+kubectl apply -f deployment.yaml -n ${env.K8S_NAMESPACE}
+kubectl apply -f service.yaml -n ${env.K8S_NAMESPACE}
+
+kubectl rollout status deployment/${env.APP_NAME} -n ${env.K8S_NAMESPACE} --timeout=120s
+kubectl get pods -n ${env.K8S_NAMESPACE} -l app=${env.APP_NAME}
+kubectl get svc -n ${env.K8S_NAMESPACE} -l app=${env.APP_NAME}
+
+rm -rf /tmp/${env.APP_NAME}-k8s
+EOF
+"""
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            echo "Pipeline completed. Deploy target: ${params.DEPLOY_TARGET}"
+            script {
+                if (env.TTL_IMAGE) {
+                    echo "Image: ${env.TTL_IMAGE}"
+                }
+            }
+        }
+        success {
+            echo 'Deployment successful!'
+        }
+        failure {
+            echo 'Deployment failed!'
+        }
+    }
+}
