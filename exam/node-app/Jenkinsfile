@@ -16,8 +16,9 @@ pipeline {
         APP_NAME = 'node-app'
         CONTAINER_NAME = 'node-app'
         DEPLOY_HOST = 'docker'
-        K8S_HOST = 'k8s-master'
+        K8S_SERVER = 'https://k8s-master:6443'
         K8S_NAMESPACE = 'default'
+        K8S_CREDENTIALS_ID = 'k8s-token'
         SSH_CREDENTIALS_ID = 'docker-vm-ssh'
         NODE_VERSION = '24'
     }
@@ -164,30 +165,25 @@ EOF
                 expression { params.DEPLOY_TARGET == 'k8s' }
             }
             steps {
-                withCredentials([sshUserPrivateKey(
-                    credentialsId: env.SSH_CREDENTIALS_ID,
-                    keyFileVariable: 'SSH_KEY',
-                    usernameVariable: 'SSH_USER'
-                )]) {
+                withCredentials([string(credentialsId: env.K8S_CREDENTIALS_ID, variable: 'K8S_TOKEN')]) {
                     dir(env.APP_DIR) {
                         sh """
-scp -i "\$SSH_KEY" -o StrictHostKeyChecking=no -r k8s "\$SSH_USER@${env.K8S_HOST}:/tmp/${env.APP_NAME}-k8s"
+sed -i "s|IMAGE_PLACEHOLDER|${env.TTL_IMAGE}|g" k8s/deployment.yaml
 
-ssh -i "\$SSH_KEY" -o StrictHostKeyChecking=no "\$SSH_USER@${env.K8S_HOST}" 'bash -s' <<EOF
-set -euxo pipefail
+kubectl --server=${env.K8S_SERVER} --token="\$K8S_TOKEN" --insecure-skip-tls-verify=true \
+  apply -f k8s/deployment.yaml -n ${env.K8S_NAMESPACE}
 
-cd /tmp/${env.APP_NAME}-k8s
-sed -i "s|IMAGE_PLACEHOLDER|${env.TTL_IMAGE}|g" deployment.yaml
+kubectl --server=${env.K8S_SERVER} --token="\$K8S_TOKEN" --insecure-skip-tls-verify=true \
+  apply -f k8s/service.yaml -n ${env.K8S_NAMESPACE}
 
-kubectl apply -f deployment.yaml -n ${env.K8S_NAMESPACE}
-kubectl apply -f service.yaml -n ${env.K8S_NAMESPACE}
+kubectl --server=${env.K8S_SERVER} --token="\$K8S_TOKEN" --insecure-skip-tls-verify=true \
+  rollout status deployment/${env.APP_NAME} -n ${env.K8S_NAMESPACE} --timeout=120s
 
-kubectl rollout status deployment/${env.APP_NAME} -n ${env.K8S_NAMESPACE} --timeout=120s
-kubectl get pods -n ${env.K8S_NAMESPACE} -l app=${env.APP_NAME}
-kubectl get svc -n ${env.K8S_NAMESPACE} -l app=${env.APP_NAME}
+kubectl --server=${env.K8S_SERVER} --token="\$K8S_TOKEN" --insecure-skip-tls-verify=true \
+  get pods -n ${env.K8S_NAMESPACE} -l app=${env.APP_NAME}
 
-rm -rf /tmp/${env.APP_NAME}-k8s
-EOF
+kubectl --server=${env.K8S_SERVER} --token="\$K8S_TOKEN" --insecure-skip-tls-verify=true \
+  get svc -n ${env.K8S_NAMESPACE} -l app=${env.APP_NAME}
 """
                     }
                 }
