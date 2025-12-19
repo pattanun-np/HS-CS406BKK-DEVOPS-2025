@@ -14,7 +14,7 @@ pipeline {
         APP_NAME = 'node-app'
         CONTAINER_NAME = 'node-app'
         TARGET_HOST = 'target'
-        DOCKER_HOST = 'docker'
+        DOCKER_VM_HOST = 'docker'
         K8S_SERVER = 'https://k8s-master:6443'
         K8S_NAMESPACE = 'default'
         TARGET_SSH_CREDENTIALS_ID = 'target-vm-ssh'
@@ -143,7 +143,7 @@ EOF
                             usernameVariable: 'SSH_USER'
                         )]) {
                             sh """
-ssh -i "\$SSH_KEY" -o StrictHostKeyChecking=no "\$SSH_USER@${env.DOCKER_HOST}" 'bash -s' <<EOF
+ssh -i "\$SSH_KEY" -o StrictHostKeyChecking=no "\$SSH_USER@${env.DOCKER_VM_HOST}" 'bash -s' <<EOF
 set -euxo pipefail
 
 docker pull ${env.TTL_IMAGE}
