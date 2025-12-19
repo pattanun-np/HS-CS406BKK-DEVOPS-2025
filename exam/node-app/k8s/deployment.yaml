@@ -1,40 +1,40 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: node-app
+  name: myapp
   labels:
-    app: node-app
+    app: myapp
 spec:
   replicas: 2
   selector:
     matchLabels:
-      app: node-app
+      app: myapp
   template:
     metadata:
       labels:
-        app: node-app
+        app: myapp
     spec:
       containers:
-      - name: node-app
-        image: IMAGE_PLACEHOLDER
-        ports:
-        - containerPort: 4444
-        resources:
-          requests:
-            memory: "64Mi"
-            cpu: "100m"
-          limits:
-            memory: "128Mi"
-            cpu: "200m"
-        readinessProbe:
-          httpGet:
-            path: /
-            port: 4444
-          initialDelaySeconds: 5
-          periodSeconds: 10
-        livenessProbe:
-          httpGet:
-            path: /
-            port: 4444
-          initialDelaySeconds: 15
-          periodSeconds: 20
+        - name: myapp
+          image: IMAGE_PLACEHOLDER
+          ports:
+            - containerPort: 4444
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "100m"
+            limits:
+              memory: "128Mi"
+              cpu: "200m"
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 4444
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 4444
+            initialDelaySeconds: 15
+            periodSeconds: 20
