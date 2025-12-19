@@ -15,7 +15,7 @@ pipeline {
         CONTAINER_NAME = 'node-app'
         TARGET_HOST = 'target'
         DOCKER_VM_HOST = 'docker'
-        K8S_SERVER = 'https://k8s-master:6443'
+        K8S_SERVER = 'https://kubernetes:6443'
         K8S_NAMESPACE = 'default'
         TARGET_SSH_CREDENTIALS_ID = 'target-vm-ssh'
         DOCKER_SSH_CREDENTIALS_ID = 'docker-vm-ssh'
